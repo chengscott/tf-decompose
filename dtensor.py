@@ -1,11 +1,6 @@
-
+from .utils import shuffled
 import tensorflow as tf
-from tqdm import trange
-from utils import shuffled, get_fit
-
 import logging
-logging.basicConfig(filename='loss.log', level=logging.DEBUG)
-_log = logging.getLogger('decomp')
 
 
 class DecomposedTensor:
@@ -13,6 +8,9 @@ class DecomposedTensor:
     Represent CP / Tucker decomposition of a tensor in TensorFlow.
 
     """
+
+    def __init__(self, logger=None):
+        self.logger = logger or logging.getLogger(__name__)
 
     def init_random(self, a=0.0, b=1.0):
         pass
@@ -26,6 +24,16 @@ class DecomposedTensor:
     def get_train_ops(self, X_var, optimizer):
         pass
 
+    def get_fit_op(self, X, Y):
+        """
+        Squared frobenius norm operator of 2 tf.Variable
+            ||X - Y||_F^2  = <X,X> + <Y,Y> - 2 <X,Y>
+
+        """
+        normX = tf.norm(X)**2
+        normresidual = tf.norm(X - Y)**2
+        return tf.constant(1., dtype=self.dtype) - normresidual / normX
+
     def train_als(self, X_data, optimizer, epochs=1000):
         """
         Use alt. least-squares to find the CP/Tucker decomposition of tensor `X`.
@@ -34,47 +42,52 @@ class DecomposedTensor:
         X_var = tf.Variable(X_data)
         loss_op, train_ops = self.get_train_ops(X_var, optimizer)
 
-        init_op = tf.global_variables_initializer()
-
         with tf.Session() as sess:
-            sess.run(init_op)
+            sess.run(tf.global_variables_initializer())
 
-            for e in trange(epochs):
+            for e in range(epochs):
                 for alt, train_op in enumerate(shuffled(train_ops)):
-                    _, loss = sess.run([train_op, loss_op], feed_dict={X_var: X_data})
-                    _log.debug('[%3d:%3d] loss: %.5f' % (e, alt, loss))
+                    _, loss = sess.run(
+                        [train_op, loss_op], feed_dict={X_var: X_data})
+                    self.logger.debug('[%3d:%3d] loss: %.5f' % (e, alt, loss))
 
-            print('final loss: %.5f' % loss)
+            self.logger.info('final loss: %.5f' % loss)
             return sess.run(self.X)
 
-    def train_als_early(self, X_data, optimizer, epochs=1000, stop_freq=50, stop_thresh=1e-10):
+    def train_als_early(self,
+                        X_data,
+                        optimizer,
+                        epochs=1000,
+                        stop_freq=100,
+                        stop_threshold=1e-10):
         """
         ALS with early stopping.
 
         """
         X_var = tf.Variable(X_data)
         loss_op, train_ops = self.get_train_ops(X_var, optimizer)
+        fit_op = self.get_fit_op(X_var, self.X)
         fit_prev = 0.0
 
-        init_op = tf.global_variables_initializer()
-
         with tf.Session() as sess:
-            sess.run(init_op)
+            sess.run(tf.global_variables_initializer())
 
-            for e in trange(epochs):
+            for e in range(epochs):
                 for alt, train_op in enumerate(shuffled(train_ops)):
-                    _, loss = sess.run([train_op, loss_op], feed_dict={X_var: X_data})
-                    _log.debug('[%3d:%3d] loss: %.5f' % (e, alt, loss))
+                    _, loss = sess.run(
+                        [train_op, loss_op], feed_dict={X_var: X_data})
+                    self.logger.debug('[%3d:%3d] loss: %.5f' % (e, alt, loss))
 
-                if e % stop_freq:
-                    X_predict = sess.run(self.X)
-                    fit = get_fit(X_data, X_predict)
+                if stop_freq and e % stop_freq == 0:
+                    fit = sess.run(fit_op)
                     fit_change = abs(fit - fit_prev)
-
-                    if fit_change < stop_thresh and e > 0:
-                        print('Stopping early, fit_change: %.10f' % (fit_change))
+                    if fit_change < stop_threshold:
+                        self.logger.info(
+                            'Early stop with fit_change: %.10f' % fit_change)
                         break
                     fit_prev = fit
 
-            print('final loss: %.5f\nfinal fit %.5f' % (loss, fit))
+            self.logger.info('final loss: %.5f' % loss)
+            if stop_freq:
+                self.logger.info('final fit %.5f' % fit)
             return sess.run(self.X)

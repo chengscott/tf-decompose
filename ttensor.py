@@ -1,22 +1,26 @@
-
+from .dtensor import DecomposedTensor
+from .utils import shuffled, nvecs, refold_tf, unfold_tf
 import tensorflow as tf
 import numpy as np
-from tqdm import trange
-from dtensor import DecomposedTensor, _log
-from utils import nvecs, shuffled, get_fit, refold_tf, unfold_tf
-
 
 
 class TuckerTensor(DecomposedTensor):
     """
-    Used for Tucker decomposition of a tensor.
-
+    Represent a tensor to perform Tucker decomposition
     """
-    def __init__(self, shape, ranks, regularize=1e-5,
-                 dtype=tf.float64, init='random', X_data=None):
+
+    def __init__(self,
+                 shape,
+                 ranks,
+                 regularize=1e-5,
+                 dtype=tf.float64,
+                 init='random',
+                 X_data=None,
+                 logger=None):
+        super().__init__(logger)
         self.shape = shape
         self.order = len(shape)
-        self.ranks = ranks if (type(ranks) is list) else [ranks]*self.order
+        self.ranks = ranks if (type(ranks) is list) else [ranks] * self.order
         self.regularize = regularize
         self.dtype = dtype
         self.init_components(init, X_data)
@@ -29,11 +33,10 @@ class TuckerTensor(DecomposedTensor):
 
     def init_components(self, init, X_data, a=0.0, b=1.0):
         """
-        Init component matrices with random vals in the interval [a,b).
-
+        Initialize component matrices with nvecs or random samples from [a,b).
         """
-        self.G = tf.Variable(tf.random_uniform(
-            self.ranks, a, b, self.dtype), name='G')
+        self.G = tf.Variable(
+            tf.random_uniform(self.ranks, a, b, self.dtype), name='G')
 
         with tf.name_scope('U'):
             self.U = [None] * self.order
@@ -44,19 +47,19 @@ class TuckerTensor(DecomposedTensor):
                 elif init == 'random':
                     shape = (self.shape[n], self.ranks[n])
                     init_val = np.random.uniform(low=a, high=b, size=shape)
-                self.U[n] = tf.Variable(init_val, name=str(n), dtype=self.dtype)
+                self.U[n] = tf.Variable(
+                    init_val, name=str(n), dtype=self.dtype)
 
     def init_reconstruct(self):
         """
         Initialize variable for reconstructed tensor `X` with components `U`.
-
         """
         G_to_X = self.G
         shape = self.ranks[:]
 
         for n in range(self.order):
             shape[n] = self.shape[n]
-            name = None if (n < self.order-1) else 'X'
+            name = None if (n < self.order - 1) else 'X'
 
             Un_mul_G = tf.matmul(self.U[n], unfold_tf(G_to_X, n))
             with tf.name_scope(name):
@@ -68,7 +71,6 @@ class TuckerTensor(DecomposedTensor):
         """
         Return tf op used to assign new value to core tensor G.
           G = X  times1 u1  times2 u2  times3 u3  ...
-
         """
         X_to_G = tf.identity(X_var)
         shape = list(self.shape)
@@ -83,17 +85,16 @@ class TuckerTensor(DecomposedTensor):
 
     def hosvd(self, X_data):
         """
-        HOSVD
-
+        Higher-Order SVD (HOSVD)
         """
         X_var = tf.Variable(X_data)
-        init_op = tf.global_variables_initializer()
+        fit_op = self.get_fit_op(X_var, self.X)
 
         with tf.Session() as sess:
-            sess.run(init_op)
+            sess.run(tf.global_variables_initializer())
 
-            for n in shuffled(trange(self.order)):
-                _,u,_ = tf.svd(unfold_tf(X_var, n), name='svd%3d' % n)
+            for n in shuffled(range(self.order)):
+                _, u, _ = tf.svd(unfold_tf(X_var, n), name='svd%d' % n)
 
                 # Set U[n] to the first ranks[n] left-singular values of X
                 new_U = tf.transpose(u[:self.ranks[n]])
@@ -103,25 +104,22 @@ class TuckerTensor(DecomposedTensor):
                 sess.run([svd_op], feed_dict={X_var: X_data})
 
                 # Log fit after training nth component
-                X_predict = sess.run(self.X)
-                fit = get_fit(X_data, X_predict)
-                _log.debug('[U%3d] fit: %.5f' % (n, fit))
+                fit = sess.run(fit_op)
+                self.logger.debug('[U%3d] fit: %.5f' % (n, fit))
 
             # Compute new core tensor value G
             core_op = self.get_core_op(X_var)
             sess.run([core_op], feed_dict={X_var: X_data})
 
             # Log final fit
-            X_predict = sess.run(self.X)
-            fit = get_fit(X_data, X_predict)
-            _log.debug('[G] fit: %.5f' % fit)
+            fit = sess.run(fit_op)
+            self.logger.info('[G] fit: %.5f' % fit)
 
-            return X_predict
+            return sess.run(self.X)
 
     def get_ortho_iter(self, X_var, n):
         """
         Get SVD for G tensor-product with all U except U[n].
-
         """
         Y = tf.identity(X_var)
         shape = list(self.shape)
@@ -139,42 +137,36 @@ class TuckerTensor(DecomposedTensor):
 
     def hooi(self, X_data, epochs=100):
         """
-        HOOI: Higher-Order Orthogonal Iteration
-
+        Higher-Order Orthogonal Iteration (HOOI)
         """
         X_var = tf.Variable(X_data)
-        init_op = tf.global_variables_initializer()
+        fit_op = self.get_fit_op(X_var, self.X)
         svd_ops = [None] * self.order
 
         with tf.Session() as sess:
-            sess.run(init_op)
-            for e in trange(epochs):
+            sess.run(tf.global_variables_initializer())
 
+            for e in range(epochs):
                 # Set up orthogonal iteration operators
                 for n in range(self.order):
                     Y = self.get_ortho_iter(X_var, n)
-                    _,u,_ = tf.svd(unfold_tf(Y, n), name='svd%3d' % n)
+                    _, u, _ = tf.svd(unfold_tf(Y, n), name='svd%d' % n)
                     svd_ops[n] = tf.assign(self.U[n], u[:, :self.ranks[n]])
 
-                for n in shuffled(trange(self.order)):
+                for n in shuffled(range(self.order)):
                     sess.run([svd_ops[n]], feed_dict={X_var: X_data})
-
-                    X_predict = sess.run(self.X)
-                    fit = get_fit(X_data, X_predict)
-                    _log.debug('[%3d-U%3d] fit: %.5f' % (e, n, fit))
-
+                    fit = sess.run(fit_op)
+                    self.logger.debug('[%3d-U%3d] fit: %.5f' % (e, n, fit))
             # Compute new core tensor value G
             core_op = self.get_core_op(X_var)
             sess.run([core_op], feed_dict={X_var: X_data})
+            # Final fit
+            fit = sess.run(fit_op)
+            self.logger.info('[G] fit: %.5f' % fit)
 
-            # Log final fit
-            X_predict = sess.run(self.X)
-            fit = get_fit(X_data, X_predict)
-            _log.debug('[G] fit: %.5f' % fit)
+            return sess.run(self.X)
 
-            return X_predict
-
-    def get_train_ops(self, X_var, optimizer):
+    def get_train_ops(self, X_var, optimizer, global_step=None):
         """
         Get separate optimizers for each component U and core G.
 
@@ -182,11 +174,15 @@ class TuckerTensor(DecomposedTensor):
           feasible (if not practical) to train components U,G for Tucker tensors.
         """
         errors = X_var - self.X
-        loss_op = tf.reduce_sum(errors ** 2)  + (self.regularize * self.norm)
+        loss_op = tf.reduce_sum(errors**2) + (self.regularize * self.norm)
 
-        min_U = [ optimizer.minimize(loss_op, var_list=[self.U[n]])
-                    for n in range(self.order) ]
-        min_G = optimizer.minimize(loss_op, var_list=[self.G])
+        min_U = [
+            optimizer.minimize(
+                loss_op, var_list=[self.U[n]], global_step=global_step)
+            for n in range(self.order)
+        ]
+        min_G = optimizer.minimize(
+            loss_op, var_list=[self.G], global_step=global_step)
         train_ops = min_U + [min_G]
 
         return loss_op, train_ops
