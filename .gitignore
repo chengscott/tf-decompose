@@ -1,4 +1,9 @@
 *.pyc
+build/
+dist/
+sdist/
+*.egg-info/
+
 *.log
 *.ipynb_checkpoints
 *.npy

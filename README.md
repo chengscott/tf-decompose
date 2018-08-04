@@ -2,7 +2,13 @@
 
 CP and Tucker tensor decompositions implemented in TensorFlow.
 
-### Usage
+## Installation
+
+```bash
+pip install tf_decompose
+```
+
+## Usage
 
 ```python
 import tensorflow as tf
