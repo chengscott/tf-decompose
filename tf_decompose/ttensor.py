@@ -1,7 +1,8 @@
-from .dtensor import DecomposedTensor
-from .utils import shuffled, nvecs, refold_tf, unfold_tf
 import tensorflow as tf
 import numpy as np
+
+from .dtensor import DecomposedTensor
+from .utils import shuffled, nvecs, refold_tf, unfold_tf
 
 
 class TuckerTensor(DecomposedTensor):

@@ -1,6 +1,7 @@
-from .utils import shuffled
 import tensorflow as tf
 import logging
+
+from .utils import shuffled
 
 
 class DecomposedTensor:

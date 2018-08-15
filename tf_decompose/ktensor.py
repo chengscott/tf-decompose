@@ -1,8 +1,9 @@
-from .dtensor import DecomposedTensor
-from .utils import nvecs, bilinear
 import tensorflow as tf
 import numpy as np
 from functools import reduce
+
+from .dtensor import DecomposedTensor
+from .utils import nvecs, bilinear
 
 
 class KruskalTensor(DecomposedTensor):
